@@ -1,0 +1,143 @@
+import sqlite3
+from pathlib import Path
+from typing import Dict
+from movie_recommender.models import Movie
+
+
+class Database:
+    def __init__(self, db_path: str = None):
+        if db_path is None:
+            db_path = Path(__file__).parent.parent / 'data' / 'movies.db'
+        self.db_path = str(db_path)
+        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+        self.init_db()
+
+    def init_db(self) -> None:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS movies (
+                movie_id INTEGER PRIMARY KEY,
+                title TEXT NOT NULL,
+                overview TEXT,
+                release_year INTEGER,
+                genres TEXT,
+                vote_average REAL,
+                popularity REAL,
+                poster_path TEXT
+            )
+        ''')
+        cursor.execute("PRAGMA table_info(movies)")
+        columns = [col[1] for col in cursor.fetchall()]
+        if 'poster_path' not in columns:
+            cursor.execute('ALTER TABLE movies ADD COLUMN poster_path TEXT')
+        conn.commit()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ratings (
+                rating_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                movie_id INTEGER NOT NULL,
+                rating REAL NOT NULL,
+                FOREIGN KEY(user_id) REFERENCES users(user_id),
+                FOREIGN KEY(movie_id) REFERENCES movies(movie_id),
+                UNIQUE(user_id, movie_id)
+            )
+        ''')
+        conn.commit()
+        conn.close()
+
+    def insert_movie(self, movie: Movie) -> None:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT OR IGNORE INTO movies (movie_id, title, overview, release_year, genres, vote_average, popularity, poster_path)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (movie.movie_id, movie.title, movie.overview, movie.release_year,
+              ','.join(movie.genres), movie.vote_average, movie.popularity, movie.poster_path))
+        conn.commit()
+        conn.close()
+
+    def insert_movies(self, movies: list[Movie]) -> None:
+        for movie in movies:
+            self.insert_movie(movie)
+
+    def create_user(self, name: str) -> int:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('INSERT INTO users (name) VALUES (?)', (name,))
+        user_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return user_id
+
+    def add_or_update_rating(self, user_id: int, movie_id: int, rating: float) -> None:
+        if not 1 <= rating <= 5:
+            raise ValueError("评分范围必须是 1-5")
+        if not self.movie_exists(movie_id):
+            raise ValueError(f"电影 {movie_id} 不存在")
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('SELECT 1 FROM users WHERE user_id = ?', (user_id,))
+        if not cursor.fetchone():
+            raise ValueError(f"用户 {user_id} 不存在")
+        cursor.execute('''
+            INSERT OR REPLACE INTO ratings (user_id, movie_id, rating)
+            VALUES (?, ?, ?)
+        ''', (user_id, movie_id, rating))
+        conn.commit()
+        conn.close()
+
+    def get_all_movies(self) -> list[Movie]:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('SELECT movie_id, title, overview, release_year, genres, vote_average, popularity, poster_path FROM movies')
+        rows = cursor.fetchall()
+        conn.close()
+        movies = []
+        for row in rows:
+            genres_str = row[4] or ''
+            genres = [g.strip() for g in genres_str.split(',') if g.strip()]
+            movies.append(Movie(
+                movie_id=row[0], title=row[1], overview=row[2] or '',
+                release_year=row[3], genres=genres,
+                vote_average=row[5], popularity=row[6], poster_path=row[7]
+            ))
+        return movies
+
+    def get_user_ratings(self, user_id: int) -> Dict[int, float]:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('SELECT movie_id, rating FROM ratings WHERE user_id = ?', (user_id,))
+        rows = cursor.fetchall()
+        conn.close()
+        return {row[0]: row[1] for row in rows}
+
+    def get_all_ratings(self) -> list[dict]:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('SELECT user_id, movie_id, rating FROM ratings')
+        rows = cursor.fetchall()
+        conn.close()
+        return [{'user_id': r[0], 'movie_id': r[1], 'rating': r[2]} for r in rows]
+
+    def get_all_users(self) -> list[dict]:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('SELECT user_id, name FROM users')
+        rows = cursor.fetchall()
+        conn.close()
+        return [{'user_id': r[0], 'name': r[1]} for r in rows]
+
+    def movie_exists(self, movie_id: int) -> bool:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('SELECT 1 FROM movies WHERE movie_id = ?', (movie_id,))
+        exists = cursor.fetchone() is not None
+        conn.close()
+        return exists

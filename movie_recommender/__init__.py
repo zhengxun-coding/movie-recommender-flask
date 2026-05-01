@@ -1,0 +1,6 @@
+from movie_recommender.models import Movie
+from movie_recommender.database import Database
+from movie_recommender import cleaner
+from movie_recommender import fetcher
+from movie_recommender import recommender
+from movie_recommender import visualization
